@@ -2,10 +2,7 @@
 
 import fitz
 import os
-from os import scandir
 from collections import namedtuple
-from itertools import groupby
-
 
 
 def get_text(file_name):
@@ -54,10 +51,12 @@ def get_text(file_name):
 
 def add_annots(file_name, source_doc):
     current_doc = fitz.open(file_name)
+    current_doc_pages = dict(map(lambda x: (x.number, x), current_doc.pages()))
 
     try:
         for page in source_doc:
             page_num = page.number
+            current_doc_page = current_doc_pages.get(page_num)  # get the corresponding page
 
             for annot in page.annots():
                 annot_rect = annot.rect
@@ -66,8 +65,6 @@ def add_annots(file_name, source_doc):
                 annot_info = annot.info
                 popup_rect = annot.popup_rect
 
-                current_doc_pages = dict(map(lambda x: (x.number, x), current_doc.pages()))
-                current_doc_page = current_doc_pages.get(page_num)  # get the corresponding page
                 new_annot = current_doc_page.add_rect_annot(annot_rect)  # create new rect annotation
                 new_annot.set_border(**annot_border)  # set border from existing annotation
                 new_annot.set_colors(**annot_colors)  # set color from existing annotation
@@ -75,8 +72,8 @@ def add_annots(file_name, source_doc):
                 new_annot.set_info(annot_info)  # set info from existing annotation
                 new_annot.update(opacity=0.5)  # update new annotation
 
-                if current_doc.can_save_incrementally():
-                    current_doc.save(file_name, incremental=True, encryption=0)
+        if current_doc.can_save_incrementally():
+            current_doc.save(file_name, incremental=True, encryption=0)
 
     except Exception as e:
         import traceback
@@ -87,8 +84,8 @@ def add_annots(file_name, source_doc):
 
 def main():
     dir_name = os.path.dirname(__file__)
-    source_file_name = os.path.join(dir_name + "\\Test_Folder\\119-0239A_01000_CAD.pdf")
-    folder_path = os.path.join(dir_name + "\\Test_Folder\\test\\")
+    source_file_name = os.path.join(dir_name + "\\Test_Folder\\119-0239A_01000_PER.pdf")
+    folder_path = os.path.join(dir_name + "\\Test_Folder\\test2\\")
     output_text = ''
 
     with fitz.open(source_file_name) as source_doc:
