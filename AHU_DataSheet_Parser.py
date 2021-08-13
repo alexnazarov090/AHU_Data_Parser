@@ -87,73 +87,100 @@ def add_annots(file_name, source_doc):
         current_doc.close()
 
 
-def find_text(file_name):
+def find_text(doc):
 
     ahu_sections = [
-        ('SILENCER',   r'^шумоглушитель|^silencer|^sound attenuator'),
+        ('SILENCER',   r'^(блок\s)?шумоглушител[ья]|^silencer|^sound attenuator'),
         ('BAG_FILTER',   r'^(карманный\s)?фильтр(?![аовму]+)|^bag filter'),
         ('PANEL_FILTER',   r'^(панельный\s)?фильтр(?![аовму]+)|^panel filter'),
-        ('HEAT_RECOVERY_SUPPLY',   r'^(нагреватель\s)?гликол\.?(иевый)? рекуператор(?![аовму]+)|^(glycol\s)?heat recovery'),
-        ('HEAT_RECOVERY_EXHAUST',   r'^(нагреватель\s)?гликол\.?(иевый)? рекуператор(?![аовму]+)|^(glycol\s)?heat recovery'),
-        ('HEATER',   r'^нагреватель(\sвоздуха)?|^(air\s)?heater'),
-        ('COOLER',   r'^охладитель(\sвоздуха)?|^(air\s)?cooler'),
+        ('HEAT_RECOVERY_SUPPLY',   r'^(нагреватель\s)?гликол\.?(иевый)? рекуператор(?![аовму]+)|^(glycol\s)?energy recovery'),
+        ('HEAT_RECOVERY_EXHAUST',   r'^(охладитель\s)?гликол\.?(иевый)? рекуператор(?![аовму]+)|^(glycol\s)?energy recovery'),
+        ('HEATER',   r'^(водяной\s)?(на|подо)греватель(\sвоздуха)?|^(air\s)?heater'),
+        ('COOLER',   r'^(водяной|фреоновый)?\s?охладитель(\sвоздуха)?|^(Water|DX)\s?(air\s)?cooler'),
         ('FAN',   r'^вентилятор(?![аовму]+)|^fan'),
         ]
-
     ahu_regex = '|'.join('(?P<%s>%s)' % pair for pair in ahu_sections)
+
+    heat_exchanger_parameters = [
+        ('AIR_FLOW_RATE',   r'расход(?!\sсреды)(?:\sвоздуха)?|(?:air\s)?flow(?:\srate)?'),
+        ('AIR_VELOCITY',   r'скорость(?!\sсреды|\sтеплоносителя)(?:\sвоздуха)?'),
+        ('INLET_TEMP',   r'(?:температура\s)?воздуха?\sна\sвходе'),
+        ('OUTLET_TEMP',   r'(?:температура\s)?воздуха?\sна\sвыходе'),
+        ('AIR_PR_DROP',   r'пот\.?(?:ер[ия])?\s?давл\.?(?:ения\s)?\s?по\sвоздуху'),
+        ('CAPACITY',   r'производительность|мощность'),
+        ('MEDIUM',   r'теплоноситель$|среда$'),
+        ('MEDIUM_FLOW_RATE',   r'расход(?!\sвоздуха)(?:\sсреды)?|(?:air\s)?flow(?:\srate)?'),
+        ('MEDIUM_VELOCITY',   r'скорость(?!\sвоздуха)(?:\sтеплоносителя)?'),
+        ('MEDIUM_IN_OUTLET_TEMP',   r'(?:температура\s)?(?:теплоносител[ья]|сред[ыа]\s)?(?:на\s)?входе?\s\/\s(?:температура\s)?(?:теплоносител[ья]|сред[ыа]\s)?(?:на\s)?выходе?'),
+        ('MEDIUM_INLET_TEMP',   r'(?:температура\s)?(?:теплоносител[ья]|сред[ыа]\s)(?:на\s)?входе?'),
+        ('MEDIUM_OUTLET_TEMP',   r'(?:температура\s)?(?:теплоносител[ья]|сред[ыа]\s)(?:на\s)?выходе?'),
+        ('MEDIUM_PR_DROP',   r'пот\.?(?:ер[ия])?\s?давл\.?(?:ения\s)?\s?(?:теплоносител[ья]|сред[ыа])'),
+        ('MEDIUM_HEX_VOLUME',   r'объем(?:\sтеплоносител[ья]|сред[ыа])?'),
+        ('HEX_ROWS',   r'рядность'),
+        ('HEX_INLET_DN',   r'(?:соединение|диаметр подсоединения)\s(?:на\s)?вход[еа]?'),
+        ('HEX_OUTLET_DN',   r'(?:соединение|диаметр подсоединения)\s(?:на\s)?выход[еа]?'),
+    ]
+    heat_exchanger_regex = '|'.join('(?P<%s>%s)' % pair for pair in heat_exchanger_parameters)
 
     Word = namedtuple('Word', ['x0', 'y0', 'x1', 'y1', 'word', 'page_number'], defaults=(None,) * 6)
     PageRect = namedtuple('Page', ['x0', 'y0', 'x1', 'y1'], defaults=(None,) * 4)
 
-    with fitz.open(file_name) as doc:
 
-        doc_pages = dict(map(lambda x: (x.number, x), doc.pages()))
-        key_words = []
-        page_rect = PageRect(*(doc_pages[0].rect))
+    doc_pages = dict(map(lambda x: (x.number, x), doc.pages()))
+    key_words = []
+    page_rect = PageRect(*(doc_pages[0].rect))
 
-        for page in doc:
+    for page in doc:
+
+        words = page.getText("words")
+        prev_match = ""
+
+        for w in words:
+            match = re.fullmatch(ahu_regex, w[4], flags=re.IGNORECASE)
+            if match:
+                if match.group(0) != prev_match:
+                    word = Word(*w[:5], page_number=page.number)
+                    key_words.append(word)
+                    prev_match = match.group(0)
+
+    for idx, cur_word in enumerate(key_words):
+        if idx < (len(key_words) - 1):
+            page = doc_pages.get(cur_word.page_number)
             words = page.getText("words")
-            # ahu_pars = [Word(*w[:5]) for w in words]
-            # sorted_text = pars_sort(ahu_pars)
+            next_word = key_words[idx + 1]
 
-            # for match in re.finditer(ahu_regex, sorted_text, flags=re.IGNORECASE):
-            #     print(match)
-            
-            prev_match = ""
-            for w in words:
-                match = re.search(ahu_regex, w[4], flags=re.IGNORECASE)
-                if match:
-                    if match.group(0) != prev_match:
-                        word = Word(*w[:5], page_number=page.number)
-                        key_words.append(word)
-                        prev_match = match.group(0)
+            if cur_word.page_number == next_word.page_number:
+                sec_rect = fitz.Rect(page_rect.x0, cur_word.y0, page_rect.x1, next_word.y0)
+                section_pars = [Word(*w[:5]) for w in words if fitz.Rect(w[:4]) in sec_rect]
+                sorted_text = pars_sort(section_pars)
 
+                words_list = sorted_text.split(", ")
+                for idx, item in enumerate(words_list):
+                    if idx < (len(words_list) - 1):
+                        match = re.search(heat_exchanger_regex, item, flags=re.IGNORECASE)
+                        if match:
+                            print(f"{match.lastgroup}-{words_list[idx+1]}")
+                
 
-        for idx, cur_word in enumerate(key_words):
-            if idx < (len(key_words) - 1):
-                page = doc_pages.get(cur_word.page_number)
-                words = page.getText("words")
-                next_word = key_words[idx + 1]
-                if cur_word.page_number == next_word.page_number:
-                    sec_rect = fitz.Rect(page_rect.x0, cur_word.y0, page_rect.x1, next_word.y0)
-                    section_pars = [Word(*w[:5]) for w in words if fitz.Rect(w[:4]) in sec_rect]
-                    sorted_text = pars_sort(section_pars)
-                    print(sorted_text)
-                else:
-                    two_pages_text = ""
+            else:
+                two_pages_text = ""
+                next_page = doc_pages.get(next_word.page_number)
+                next_page_words = next_page.getText("words")
+                cur_page_sec_rect = fitz.Rect(page_rect.x0, cur_word.y0, page_rect.x1, page_rect.y1)
+                next_page_sec_rect = fitz.Rect(page_rect.x0, page_rect.y0, page_rect.x1, next_word.y0)
+                cur_page_sec_pars = [Word(*w[:5]) for w in words if fitz.Rect(w[:4]) in cur_page_sec_rect]
+                next_page_sec_pars = [Word(*w[:5]) for w in next_page_words if fitz.Rect(w[:4]) in next_page_sec_rect]
 
-                    next_page = doc_pages.get(next_word.page_number)
-                    next_page_words = next_page.getText("words")
-                    cur_page_sec_rect = fitz.Rect(page_rect.x0, cur_word.y0, page_rect.x1, page_rect.y1)
-                    next_page_sec_rect = fitz.Rect(page_rect.x0, page_rect.y0, page_rect.x1, next_word.y0)
-                    cur_page_sec_pars = [Word(*w[:5]) for w in words if fitz.Rect(w[:4]) in cur_page_sec_rect]
-                    next_page_sec_pars = [Word(*w[:5]) for w in next_page_words if fitz.Rect(w[:4]) in next_page_sec_rect]
+                for item in (cur_page_sec_pars, next_page_sec_pars):
+                    sorted_text = pars_sort(item)
+                    two_pages_text += sorted_text
 
-                    for item in (cur_page_sec_pars, next_page_sec_pars):
-                        sorted_text = pars_sort(item)
-                        two_pages_text += sorted_text
-
-                    print(two_pages_text)
+                words_list = two_pages_text.split(", ")
+                for idx, item in enumerate(words_list):
+                    if idx < (len(words_list) - 1):
+                        match = re.match(heat_exchanger_regex, item, flags=re.IGNORECASE)
+                        if match:
+                            print(f"{match.lastgroup}-{words_list[idx+1]}")
 
 
 def main():
