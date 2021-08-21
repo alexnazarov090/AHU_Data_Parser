@@ -141,8 +141,8 @@ def add_annots(file_name, source_doc):
             current_doc.save(file_name, incremental=True, encryption=0)
 
     except Exception as e:
-        import traceback
-        traceback.format_exc(e)
+        logger.error(e, exc_info=True)
+        pass
 
     finally:
         current_doc.close()
@@ -151,13 +151,13 @@ def add_annots(file_name, source_doc):
 def find_text(doc):
 
     ahu_sections = [
-        ('AHU_NAME',   r'(?:Номер|Название|№|Имя)?\s?(?:установки|систем[ыа])'),
+        ('AHU_NAME',   r'Позиция заказчика:|(?:Номер|Название|№|Имя)?\s?(?:установки|систем[ыа])$'),
         ('SILENCER',   r'(?:блок\s)?шумоглушител[ья]|silencer|sound attenuator'),
         ('FILTER',   r'(?:карманный\s)?фильтр(?![аовму]+)|filter'),
         ('HEAT_RECOVERY_SUPPLY',   r'(?:нагреватель\s)?гликол\.?(?:иевый)? рекуператор(?![аовму]+)|(?:glycol\s)?energy recovery'),
         ('HEAT_RECOVERY_EXHAUST',   r'(?:охладитель\s)?гликол\.?(?:иевый)? рекуператор(?![аовму]+)|(?:glycol\s)?energy recovery'),
         ('HEATER',   r'(?:водяной\s)?(?:на|подо|обо)греватель(?:\sвоздуха)?|(?:air\s)?heater'),
-        ('COOLER',   r'(?:водяной|фреоновый)?\s?охладитель(?:\sвоздуха)?|(?:Water|DX)\s?(air\s)?cooler'),
+        ('COOLER',   r'(?:водяной|фреоновый)?\s?охладитель(?!\s?гликол\.?(?:иевый)? рекуператор)(?:\sвоздуха)?|(?:Water|DX)\s?(air\s)?cooler'),
         ('FAN',   r'вентилятор(?![аовму]+)|fan'),
         ]
     ahu_sec_regex = '|'.join('(?P<%s>%s)+?' % pair for pair in ahu_sections)
@@ -196,83 +196,112 @@ def find_text(doc):
     doc_pages = dict(map(lambda x: (x.number, x), doc.pages()))
     ahu_data = {}
     sections = {}
+    sections_added = {}
     ahu_keys = []
     page_rect = PageRect(*(doc_pages[0].rect))
-    prev_match = ""
 
-    for page in doc:
-        words = page.getText("words")
-        ahu_pars = [Word(*w[:5], page_number=page.number) for w in words]
-        grouped_ahu_pars = group_adjecent_words(ahu_pars, x_tolerance=3.0, y_tolerance=2.5)
+    try:
+        for page in doc:
+            words = page.getText("words")
+            ahu_pars = [Word(*w[:5], page_number=page.number) for w in words]
+            grouped_ahu_pars = group_adjecent_words(ahu_pars, x_tolerance=10.0, y_tolerance=1.0)
 
-        for idx, par in enumerate(grouped_ahu_pars):
-            if idx < (len(grouped_ahu_pars) - 1):
-                match = re.search(ahu_sec_regex, par.keyPhrase, flags=re.IGNORECASE)
+            for idx, par in enumerate(grouped_ahu_pars):
+                if idx < (len(grouped_ahu_pars) - 1):
+                    match = re.search(ahu_sec_regex, par.keyPhrase, flags=re.IGNORECASE)
 
-                if match:
-                    if str(match.lastgroup) == "AHU_NAME" and grouped_ahu_pars[idx+1] not in ahu_data:
-                        if re.search(r"AHU\s*.+|[ПВ]+\d+", grouped_ahu_pars[idx+1].keyPhrase, flags=re.IGNORECASE):
+                    if match:
+                        if str(match.lastgroup) == "AHU_NAME":
                             ahu_keys = list(ahu_data.keys())
-                            if len(ahu_keys) != 0:
-                                ahu_data[ahu_keys[-1]] =  sections
-                            ahu_data[grouped_ahu_pars[idx+1].keyPhrase] =  {}
-                            sections = {}
+                            ahu_name = re.search(r"AHU\s*.+|[ПВ]+\d+", 
+                                                grouped_ahu_pars[idx+1].keyPhrase, 
+                                                flags=re.IGNORECASE)
 
-                    if match.lastgroup != prev_match:
-                        sections[match.lastgroup] = par
-                        prev_match = match.lastgroup
-        
-        
+                            if ahu_name and ahu_name.string not in ahu_keys:
+                                if len(ahu_keys) != 0:
+                                    ahu_data[ahu_keys[-1]] = sections
 
-    for ahu, sections in ahu_data.items():
-        sec_vals = list(sections.values())
-        for idx, cur_word in enumerate(sec_vals):
-            if idx < (len(sec_vals) - 1):
-                page = doc_pages.get(cur_word.page_number)
-                words = page.getText("words")
-                next_word = sec_vals[idx + 1]
+                                ahu_data[grouped_ahu_pars[idx+1].keyPhrase] =  {}
+                                sections = {}
+                                sections_added = {}
+                            continue
 
-                if cur_word.page_number == next_word.page_number:
-                    sec_rect = fitz.Rect(page_rect.x0, cur_word.y0, page_rect.x1, next_word.y0)
-                    section_pars = [Word(*w[:5]) for w in words if fitz.Rect(w[:4]) in sec_rect]
-                    if len(section_pars) > 0:
-                        sorted_text = pars_sort(section_pars)
+                        if match.lastgroup not in sections_added:
+                            sections[match.lastgroup] = par
+
+                        else:
+                            section_name = f"{match.lastgroup}_{sections_added[match.lastgroup]-1}"
+                            if par.page_number == sections[match.lastgroup].page_number:
+                                continue
+
+                            if sections_added[match.lastgroup] > 2:
+                                if par.page_number == sections[section_name].page_number:
+                                    continue
+
+                            sections[f"{match.lastgroup}_{sections_added[match.lastgroup]}"] = par
+                        sections_added[match.lastgroup] = sections_added.get(match.lastgroup, 1) + 1
+
+        ahu_data[ahu_keys[-1]] = sections
+        print(ahu_data)
+    except Exception as e:
+        logger.error(e, exc_info=True)
+        pass
+
+    try:
+        for ahu, sections in ahu_data.items():
+            sec_vals = list(sections.values())
+            for idx, cur_word in enumerate(sec_vals):
+                if idx < (len(sec_vals) - 1):
+                    page = doc_pages.get(cur_word.page_number)
+                    words = page.getText("words")
+                    next_word = sec_vals[idx + 1]
+
+                    if cur_word.page_number == next_word.page_number:
+                        sec_rect = fitz.Rect(page_rect.x0, cur_word.y0, page_rect.x1, next_word.y0)
+                        section_pars = [Word(*w[:5]) for w in words if fitz.Rect(w[:4]) in sec_rect]
+                        if len(section_pars) > 0:
+                            sorted_text = pars_sort(section_pars)
+
+                            for rexp in (hex_pars_air_regex, hex_pars_water_regex):
+                                for match in re.finditer(rexp, sorted_text, flags=re.IGNORECASE|re.VERBOSE):
+                                    if match:
+                                        value = list(filter(lambda x: x, match.groups()))
+                                        print(f"{ahu}: {match.lastgroup} - {value}")            
+
+                    else:
+                        two_pages_text = ""
+                        next_page = doc_pages.get(next_word.page_number)
+                        next_page_words = next_page.getText("words")
+                        cur_page_sec_rect = fitz.Rect(page_rect.x0, cur_word.y0, page_rect.x1, page_rect.y1)
+                        next_page_sec_rect = fitz.Rect(page_rect.x0, page_rect.y0, page_rect.x1, next_word.y0)
+                        cur_page_sec_pars = [Word(*w[:5]) for w in words if fitz.Rect(w[:4]) in cur_page_sec_rect]
+                        next_page_sec_pars = [Word(*w[:5]) for w in next_page_words if fitz.Rect(w[:4]) in next_page_sec_rect]
+
+                        for item in (cur_page_sec_pars, next_page_sec_pars):
+                            if len(item) > 0:
+                                sorted_text = pars_sort(item)
+                                two_pages_text += sorted_text
 
                         for rexp in (hex_pars_air_regex, hex_pars_water_regex):
-                            for match in re.finditer(rexp, sorted_text, flags=re.IGNORECASE|re.VERBOSE):
-                                if match:
-                                    value = list(filter(lambda x: x, match.groups()))
-                                    # print(f"{match.lastgroup} - {value}")            
+                                for match in re.finditer(rexp, two_pages_text, flags=re.IGNORECASE|re.VERBOSE):
+                                    if match:
+                                        value = list(filter(lambda x: x, match.groups()))
+                                        print(f"{ahu}: {match.lastgroup} - {value}")
 
-                else:
-                    two_pages_text = ""
-                    next_page = doc_pages.get(next_word.page_number)
-                    next_page_words = next_page.getText("words")
-                    cur_page_sec_rect = fitz.Rect(page_rect.x0, cur_word.y0, page_rect.x1, page_rect.y1)
-                    next_page_sec_rect = fitz.Rect(page_rect.x0, page_rect.y0, page_rect.x1, next_word.y0)
-                    cur_page_sec_pars = [Word(*w[:5]) for w in words if fitz.Rect(w[:4]) in cur_page_sec_rect]
-                    next_page_sec_pars = [Word(*w[:5]) for w in next_page_words if fitz.Rect(w[:4]) in next_page_sec_rect]
-
-                    for item in (cur_page_sec_pars, next_page_sec_pars):
-                        if len(item) > 0:
-                            sorted_text = pars_sort(item)
-                            two_pages_text += sorted_text
-
-                    for rexp in (hex_pars_air_regex, hex_pars_water_regex):
-                            for match in re.finditer(rexp, two_pages_text, flags=re.IGNORECASE|re.VERBOSE):
-                                if match:
-                                    value = list(filter(lambda x: x, match.groups()))
-                                    # print(f"{match.lastgroup} - {value}")
-    print(ahu_data)
+    except Exception as e:
+        logger.error(e, exc_info=True)
+        pass
 
 def main():
     dir_name = os.path.dirname(__file__)
-    source_file_name = os.path.join(dir_name + "\\Test_Folder\\119-0239A_01000_PER.pdf")
+    source_file_name = os.path.join(dir_name + "\\Test_Folder\\Техника часть 1.pdf")
     folder_path = os.path.join(dir_name + "\\Test_Folder\\test2\\")
     output_text = ''
 
     with fitz.open(source_file_name) as source_doc:
         find_text(source_doc)
+    
+    # with fitz.open(source_file_name) as source_doc:
     #     with os.scandir(folder_path) as files:
     #         for file in files:
     #             if file.is_file() and file.name.endswith('.pdf'):
