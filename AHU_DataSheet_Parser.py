@@ -16,60 +16,7 @@ logging.basicConfig(level=logging.DEBUG,
 logger = logging.getLogger(__name__)
 
 
-def get_text_from_annots(file_name):
-    output_text = ""
-    Word = namedtuple('Word', ['x0', 'y0', 'x1', 'y1', 'word'])
-    
-    with fitz.open(file_name) as doc:
-        for page in doc:
-            words = page.getText("words")
-            for annot in page.annots():
-                annot_name = annot.info.get("content")
-                rect = annot.rect
-
-                if annot_name:
-                    output_text += f'{annot_name}:\n====================\n'
-                    ahu_pars = [Word(*w[:5]) for w in words if fitz.Rect(w[:4]) in rect]
-                    output_text += pars_sort(ahu_pars)
-
-    return output_text
-
-
-def add_annots(file_name, source_doc):
-    current_doc = fitz.open(file_name)
-    current_doc_pages = dict(map(lambda x: (x.number, x), current_doc.pages()))
-
-    try:
-        for page in source_doc:
-            page_num = page.number
-            current_doc_page = current_doc_pages.get(page_num)  # get the corresponding page
-
-            for annot in page.annots():
-                annot_rect = annot.rect
-                annot_border = annot.border
-                annot_colors = annot.colors
-                annot_info = annot.info
-                popup_rect = annot.popup_rect
-
-                new_annot = current_doc_page.add_rect_annot(annot_rect)  # create new rect annotation
-                new_annot.set_border(**annot_border)  # set border from existing annotation
-                new_annot.set_colors(**annot_colors)  # set color from existing annotation
-                new_annot.set_popup(popup_rect)  # set popup from existing annotation
-                new_annot.set_info(annot_info)  # set info from existing annotation
-                new_annot.update(opacity=0.5)  # update new annotation
-
-        if current_doc.can_save_incrementally():
-            current_doc.save(file_name, incremental=True, encryption=0)
-
-    except Exception as e:
-        logger.error(e, exc_info=True)
-        pass
-
-    finally:
-        current_doc.close()
-
-
-def group_adjecent_words(ahu_pars, x_tolerance=0.0, y_tolerance=0.0, as_text=False):
+def group_adjacent_words(ahu_pars, x_tolerance=0.0, y_tolerance=0.0, as_text=False):
 
     KeyPhrase = namedtuple('KeyPhrase', ['x0', 'y0', 'x1', 'y1', 'keyPhrase', 'page_number'], defaults=(None,) * 6)
 
@@ -99,7 +46,7 @@ def group_adjecent_words(ahu_pars, x_tolerance=0.0, y_tolerance=0.0, as_text=Fal
                             row += f'{tup.word}-'
                     else:
                         row += f'{tup.word}-'
-                key_phrases += f'{row}\n====================\n'
+                key_phrases += f'{row}\n{len(row)*"="}\n'
 
         else:
             key_phrases = []
@@ -113,17 +60,6 @@ def group_adjecent_words(ahu_pars, x_tolerance=0.0, y_tolerance=0.0, as_text=Fal
                     if word.x0 - prev[-1].x1 < x_tolerance:
                         prev.append(word)  # put them in the same word group
 
-                        if word == sort_group[-1]:
-                            # assemble key phrase/parameter name
-                            key_phrase = KeyPhrase(prev[0].x0, 
-                                                    prev[0].y0, 
-                                                    prev[-1].x1, 
-                                                    prev[-1].y1, 
-                                                    "_".join(map(lambda x: x.word, prev)), 
-                                                    prev[0].page_number)
-
-                            key_phrases.append(key_phrase)
-
                     else:
                         # assemble key phrase/parameter name
                         key_phrase = KeyPhrase(prev[0].x0, 
@@ -136,6 +72,15 @@ def group_adjecent_words(ahu_pars, x_tolerance=0.0, y_tolerance=0.0, as_text=Fal
                         key_phrases.append(key_phrase)
                         prev = [word]
 
+                    if word == sort_group[-1]:
+                        key_phrase = KeyPhrase(prev[0].x0, 
+                                                prev[0].y0, 
+                                                prev[-1].x1, 
+                                                prev[-1].y1, 
+                                                "_".join(map(lambda x: x.word, prev)), 
+                                                prev[0].page_number)
+                        key_phrases.append(key_phrase)
+        
         return key_phrases
 
     except Exception as e:
@@ -159,10 +104,13 @@ def find_text(doc):
 
     try:
         for page in doc:
+            # get words from each page
             words = page.getText("words")
+            # put all words into a list of named tuples
             ahu_pars = [Word(*w[:5], page_number=page.number) for w in words]
-            grouped_ahu_pars = group_adjecent_words(ahu_pars, x_tolerance=10.0, y_tolerance=1.0)
-
+            # group words by x and y coordinates
+            grouped_ahu_pars = group_adjacent_words(ahu_pars, x_tolerance=10.0, y_tolerance=3.0)
+            # print(grouped_ahu_pars)
             for idx, par in enumerate(grouped_ahu_pars):
                 if idx < (len(grouped_ahu_pars) - 1):
 
@@ -170,15 +118,19 @@ def find_text(doc):
                         for regexp in (HEX_PARS_AIR_REGEX, HEX_PARS_WATER_REGEX):
                             match = re.search(regexp, par.keyPhrase, flags=re.IGNORECASE)
                             if match:
-                                value = re.search(r"^\-?\d{0,4}[\,\.]?\d{0,4}$", 
-                                                par.keyPhrase, 
-                                                flags=re.IGNORECASE)
-                                if not value:
-                                    value = re.search(r"^\-?\d{0,4}[\,\.]?\d{0,4}$", 
-                                                        grouped_ahu_pars[idx+1].keyPhrase, 
+                                value = None
+                                i = 0
+                                while i < 2:
+                                    value = re.search(r"^\-?\d{0,4}[\,\.]?\d{1,4}", 
+                                                        grouped_ahu_pars[idx+i].keyPhrase, 
                                                         flags=re.IGNORECASE)
-                                if value:
-                                    sections[section_name][1][match.lastgroup] = value.string
+                                    if value:
+                                        sections[section_name][1][match.lastgroup] = value.string
+                                        break
+                                    i+=1
+
+                                if not value:
+                                    sections[section_name][1][match.lastgroup] = "-"
 
                     match = re.search(AHU_SEC_REGEX, par.keyPhrase, flags=re.IGNORECASE)
 
@@ -217,7 +169,6 @@ def find_text(doc):
                             section_name = f"{match.lastgroup}_{sections_added[match.lastgroup]}"
                             sections[section_name] = (par, {})
                         sections_added[match.lastgroup] = sections_added.get(match.lastgroup, 1) + 1
-                        continue
 
         ahu_data[ahu_keys[-1]] = sections
         print(ahu_data)
@@ -270,14 +221,68 @@ def find_text(doc):
     #     logger.error(e, exc_info=True)
     #     pass
 
+def get_text_from_annots(file_name):
+    output_text = ""
+    Word = namedtuple('Word', ['x0', 'y0', 'x1', 'y1', 'word'])
+    
+    with fitz.open(file_name) as doc:
+        for page in doc:
+            words = page.getText("words")
+            for annot in page.annots():
+                annot_name = annot.info.get("content")
+                rect = annot.rect
+
+                if annot_name:
+                    output_text += f'{annot_name}:\n====================\n'
+                    ahu_pars = [Word(*w[:5]) for w in words if fitz.Rect(w[:4]) in rect]
+                    output_text += group_adjacent_words(ahu_pars, x_tolerance=3, y_tolerance=1, as_text=True)
+
+    return output_text
+
+
+def add_annots(file_name, source_doc):
+    current_doc = fitz.open(file_name)
+    current_doc_pages = dict(map(lambda x: (x.number, x), current_doc.pages()))
+
+    try:
+        for page in source_doc:
+            page_num = page.number
+            current_doc_page = current_doc_pages.get(page_num)  # get the corresponding page
+
+            for annot in page.annots():
+                annot_rect = annot.rect
+                annot_border = annot.border
+                annot_colors = annot.colors
+                annot_info = annot.info
+                popup_rect = annot.popup_rect
+
+                new_annot = current_doc_page.add_rect_annot(annot_rect)  # create new rect annotation
+                new_annot.set_border(**annot_border)  # set border from existing annotation
+                new_annot.set_colors(**annot_colors)  # set color from existing annotation
+                new_annot.set_popup(popup_rect)  # set popup from existing annotation
+                new_annot.set_info(annot_info)  # set info from existing annotation
+                new_annot.update(opacity=0.5)  # update new annotation
+
+        if current_doc.can_save_incrementally():
+            current_doc.save(file_name, incremental=True, encryption=0)
+
+    except Exception as e:
+        logger.error(e, exc_info=True)
+        pass
+
+    finally:
+        current_doc.close()
+
+
 def main():
     dir_name = os.path.dirname(__file__)
-    source_file_name = os.path.join(dir_name + "\\Test_Folder\\119-0239A_01000_PER.pdf")
-    folder_path = os.path.join(dir_name + "\\Test_Folder\\test2\\")
-    output_text = ''
+    source_file_name = os.path.join(dir_name + "\\Test_Folder\\VE19-008885-01_AHU.pdf")
+    # folder_path = os.path.join(dir_name + "\\Test_Folder\\test2\\")
+    # output_text = ''
 
     with fitz.open(source_file_name) as source_doc:
         find_text(source_doc)
+        # output_text = get_text_from_annots(source_doc) + "\n*******************************************\n"
     
     # with fitz.open(source_file_name) as source_doc:
     #     with os.scandir(folder_path) as files:
