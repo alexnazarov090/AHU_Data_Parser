@@ -110,7 +110,7 @@ def find_text(doc):
             ahu_pars = [Word(*w[:5], page_number=page.number) for w in words]
             # group words by x and y coordinates
             grouped_ahu_pars = group_adjacent_words(ahu_pars, x_tolerance=10.0, y_tolerance=3.0)
-            # print(grouped_ahu_pars)
+
             for idx, par in enumerate(grouped_ahu_pars):
                 if idx < (len(grouped_ahu_pars) - 1):
 
