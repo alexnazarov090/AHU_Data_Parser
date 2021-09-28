@@ -5,7 +5,7 @@ import os
 import re
 import logging
 from collections import namedtuple
-from regex_patterns import AHU_SEC_REGEX, HEX_PARS_AIR_REGEX, HEX_PARS_WATER_REGEX
+from regex_patterns import AHU_SEC_REGEX, HEX_PARS_AIR_REGEX, HEX_PARS_VALUES_REGEX, HEX_PARS_WATER_REGEX, FILTER_PARS_REGEX, FILTER_PARS_VALUES_REGEX
 
 # Logger
 dir_path = os.path.dirname(os.path.realpath(__file__))
@@ -87,20 +87,49 @@ def group_adjacent_words(ahu_pars, x_tolerance=0.0, y_tolerance=0.0, as_text=Fal
         logger.error(e, exc_info=True)
         pass
 
+def get_section_pars(regexps, re_dict, idx, par, sections, section_name, grouped_ahu_pars):
+
+    if not isinstance(regexps, list):
+        regexps = [regexps]
+
+    for regexp in regexps:
+        match = re.search(regexp, par.keyPhrase, flags=re.IGNORECASE)
+        if match and match.lastgroup not in sections[section_name][1]:
+            value = None
+            i = 0
+            while i < 2:
+                value = re.search(re_dict[match.lastgroup], 
+                                    grouped_ahu_pars[idx+i].keyPhrase, 
+                                    flags=re.IGNORECASE)
+                if value:
+                    sections[section_name][1][match.lastgroup] = value.string
+                    break
+                i+=1
+                
+            if not value:
+                sections[section_name][1][match.lastgroup] = "-"
+    
+    return sections
 
 def find_text(doc):
 
     Word = namedtuple('Word', ['x0', 'y0', 'x1', 'y1', 'word', 'page_number'], defaults=(None,) * 6)
-    PageRect = namedtuple('Page', ['x0', 'y0', 'x1', 'y1'], defaults=(None,) * 4)
+    # PageRect = namedtuple('Page', ['x0', 'y0', 'x1', 'y1'], defaults=(None,) * 4)
 
 
-    doc_pages = dict(map(lambda x: (x.number, x), doc.pages()))
-    ahu_data = {}
+    # doc_pages = dict(map(lambda x: (x.number, x), doc.pages()))
+    # page_rect = PageRect(*(doc_pages[0].rect))
     section_name = ""
+    ahu_keys = []
+    sections_regex_tab = {
+        'FILTER': (FILTER_PARS_REGEX, FILTER_PARS_VALUES_REGEX),
+        'HEAT_RECOVERY_SUPPLY': ([HEX_PARS_AIR_REGEX, HEX_PARS_WATER_REGEX], HEX_PARS_VALUES_REGEX),
+        'HEATER':([HEX_PARS_AIR_REGEX, HEX_PARS_WATER_REGEX], HEX_PARS_VALUES_REGEX),
+        'COOLER': ([HEX_PARS_AIR_REGEX, HEX_PARS_WATER_REGEX], HEX_PARS_VALUES_REGEX),
+    }
+    ahu_data = {}
     sections = {}
     sections_added = {}
-    ahu_keys = []
-    page_rect = PageRect(*(doc_pages[0].rect))
 
     try:
         for page in doc:
@@ -109,31 +138,12 @@ def find_text(doc):
             # put all words into a list of named tuples
             ahu_pars = [Word(*w[:5], page_number=page.number) for w in words]
             # group words by x and y coordinates
-            grouped_ahu_pars = group_adjacent_words(ahu_pars, x_tolerance=10.0, y_tolerance=3.0)
+            grouped_ahu_pars = group_adjacent_words(ahu_pars, x_tolerance=5.0, y_tolerance=0.5)
 
             for idx, par in enumerate(grouped_ahu_pars):
                 if idx < (len(grouped_ahu_pars) - 1):
 
-                    if 'HEAT_RECOVERY_SUPPLY' in str(section_name) or 'HEATER' in str(section_name) or 'COOLER' in str(section_name):
-                        for regexp in (HEX_PARS_AIR_REGEX, HEX_PARS_WATER_REGEX):
-                            match = re.search(regexp, par.keyPhrase, flags=re.IGNORECASE)
-                            if match:
-                                value = None
-                                i = 0
-                                while i < 2:
-                                    value = re.search(r"^\-?\d{0,4}[\,\.]?\d{1,4}", 
-                                                        grouped_ahu_pars[idx+i].keyPhrase, 
-                                                        flags=re.IGNORECASE)
-                                    if value:
-                                        sections[section_name][1][match.lastgroup] = value.string
-                                        break
-                                    i+=1
-
-                                if not value:
-                                    sections[section_name][1][match.lastgroup] = "-"
-
                     match = re.search(AHU_SEC_REGEX, par.keyPhrase, flags=re.IGNORECASE)
-
                     if match:
                         if str(match.lastgroup) == "AHU_NAME":
                             ahu_keys = list(ahu_data.keys())
@@ -150,6 +160,7 @@ def find_text(doc):
                                     ahu_data[ahu_keys[-1]] = sections
 
                                 ahu_data[ahu_name.string] = {}
+                                section_name = ""
                                 sections = {}
                                 sections_added = {}
                             continue
@@ -169,57 +180,25 @@ def find_text(doc):
                             section_name = f"{match.lastgroup}_{sections_added[match.lastgroup]}"
                             sections[section_name] = (par, {})
                         sections_added[match.lastgroup] = sections_added.get(match.lastgroup, 1) + 1
+                    
+                    if section_name: 
+                        if section_name[-1].isdigit():
+                            section_name = section_name.rpartition('_')[0]
+                        
+                        sections_regex = sections_regex_tab.get(section_name)
+                        if sections_regex:
+                            sections = get_section_pars(sections_regex[0], 
+                                                        sections_regex[1], 
+                                                        idx, par, sections, section_name, grouped_ahu_pars)
 
         ahu_data[ahu_keys[-1]] = sections
         print(ahu_data)
+        return ahu_data
+
     except Exception as e:
         logger.error(e, exc_info=True)
         pass
 
-    # try:
-    #     for ahu, sections in ahu_data.items():
-    #         sec_vals = list(sections.values())
-    #         for idx, cur_word in enumerate(sec_vals):
-    #             if idx < (len(sec_vals) - 1):
-    #                 page = doc_pages.get(cur_word.page_number)
-    #                 words = page.getText("words")
-    #                 next_word = sec_vals[idx + 1]
-
-    #                 if cur_word.page_number == next_word.page_number:
-    #                     sec_rect = fitz.Rect(page_rect.x0, cur_word.y0, page_rect.x1, next_word.y0)
-    #                     section_pars = [Word(*w[:5]) for w in words if fitz.Rect(w[:4]) in sec_rect]
-    #                     if len(section_pars) > 0:
-    #                         sorted_text = group_adjecent_words(section_pars, x_tolerance=3.5, y_tolerance=1.0)
-
-    #                         for rexp in (HEX_PARS_AIR_REGEX, HEX_PARS_WATER_REGEX):
-    #                             for match in re.finditer(rexp, sorted_text, flags=re.IGNORECASE|re.VERBOSE):
-    #                                 if match:
-    #                                     value = list(filter(lambda x: x, match.groups()))
-    #                                     print(f"{ahu}: {match.lastgroup} - {value}")
-
-    #                 else:
-    #                     two_pages_text = ""
-    #                     next_page = doc_pages.get(next_word.page_number)
-    #                     next_page_words = next_page.getText("words")
-    #                     cur_page_sec_rect = fitz.Rect(page_rect.x0, cur_word.y0, page_rect.x1, page_rect.y1)
-    #                     next_page_sec_rect = fitz.Rect(page_rect.x0, page_rect.y0, page_rect.x1, next_word.y0)
-    #                     cur_page_sec_pars = [Word(*w[:5]) for w in words if fitz.Rect(w[:4]) in cur_page_sec_rect]
-    #                     next_page_sec_pars = [Word(*w[:5]) for w in next_page_words if fitz.Rect(w[:4]) in next_page_sec_rect]
-
-    #                     for item in (cur_page_sec_pars, next_page_sec_pars):
-    #                         if len(item) > 0:
-    #                             sorted_text = group_adjecent_words(section_pars, x_tolerance=3.5, y_tolerance=1.0)
-    #                             two_pages_text += sorted_text
-
-    #                     for rexp in (HEX_PARS_AIR_REGEX, HEX_PARS_WATER_REGEX):
-    #                             for match in re.finditer(rexp, two_pages_text, flags=re.IGNORECASE|re.VERBOSE):
-    #                                 if match:
-    #                                     value = list(filter(lambda x: x, match.groups()))
-    #                                     print(f"{ahu}: {match.lastgroup} - {value}")
-
-    # except Exception as e:
-    #     logger.error(e, exc_info=True)
-    #     pass
 
 def get_text_from_annots(file_name):
     output_text = ""
@@ -276,7 +255,7 @@ def add_annots(file_name, source_doc):
 
 def main():
     dir_name = os.path.dirname(__file__)
-    source_file_name = os.path.join(dir_name + "\\Test_Folder\\VE19-008885-01_AHU.pdf")
+    source_file_name = os.path.join(dir_name + "\\Test_Folder\\ХАРАКТЕРИСТИКА ВЕНТУСТАНОВОК.pdf")
     # folder_path = os.path.join(dir_name + "\\Test_Folder\\test2\\")
     # output_text = ''
 
@@ -293,7 +272,7 @@ def main():
 
     #                 output_text += get_text_from_annots(pdf_file_name) + "\n***************************\n"
 
-                    
+
     # with open('output.txt', 'w', encoding='utf-8') as fg:
     #     fg.write(output_text)
 
